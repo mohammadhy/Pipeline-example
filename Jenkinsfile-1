@@ -1,0 +1,143 @@
+pipeline { 
+
+    agent any 
+
+    environment { 
+
+        REGISTRY = '192.168.42.3:5000' 
+
+        IMAGE = "${env.JOB_NAME}" 
+
+        KUBECONFIG = credentials('my-kubeconfig') 
+
+    } 
+
+    stages { 
+
+        stage('Checkout'){ 
+
+            steps { 
+
+                git branch: 'develop',credentialsId: '26e885c2-5e8a-44c9-8eff-95fb21ad957b' ,url: 'http://192.168.42.2:8929/255-Backend/data-reader.git' 
+
+            } 
+
+        } 
+
+        stage('Get Short SHA') { 
+
+            steps { 
+
+                script { 
+
+                    env.CI_COMMIT_SHORT_SHA = sh( 
+
+                        script: 'git rev-parse --short HEAD', 
+
+                        returnStdout: true 
+
+                    ).trim() 
+
+                } 
+
+            } 
+
+        } 
+
+        stage('Check Security') { 
+
+            parallel { 
+
+                stage('Check Git Secret') { 
+
+                    steps { 
+
+                       echo 'Tools git Secret for test config git repository' 
+
+                       sh 'ls ' 
+
+                       sh 'docker run --platform linux/amd64 --rm -i -v "$PWD:/repo" trufflesecurity/trufflehog git --json --since-commit HEAD --only-verified --fail file:///repo > trufflehog.json' 
+
+                       sh 'cat trufflehog.json' 
+
+                    } 
+
+                } 
+
+                stage('Check Git Leaks') { 
+
+                    steps { 
+
+                        echo 'Check git leakage information data and config from git Tools' 
+
+                        sh 'docker run -v "$PWD:/repo" zricethezav/gitleaks detect --source="/repo" --report-format="json" --report-path="/repo/gitleak.json" -v' 
+
+                        sh 'cat gitleak.json' 
+
+                    } 
+
+                }   
+
+            } 
+
+        } 
+
+
+        stage('SonarQube analysis') { 
+
+            steps { 
+
+                withSonarQubeEnv('Sonar-Server-8.9.2') { 
+
+                  withMaven(maven:'Maven-3.5') { 
+
+                        sh ''' mvn sonar:sonar ''' 
+
+                    } 
+
+                } 
+
+            } 
+
+        }  
+
+
+        stage('Build') { 
+
+            steps { 
+
+              sh ''' echo $CI_COMMIT_SHORT_SHA ''' 
+
+              sh ''' DOCKER_BUILDKIT=1  && docker build -t $REGISTRY/$IMAGE:v1 . ''' 
+
+              sh ''' DOCKER_BUILDKIT=1 && docker build -t $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA . ''' 
+
+            } 
+
+        } 
+
+        stage('Push To Docker Registries') { 
+
+            steps { 
+
+              sh ''' docker push $REGISTRY/$IMAGE:v1 ''' 
+
+              sh ''' docker push $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA ''' 
+
+            } 
+
+        } 
+
+        stage('Deploy') { 
+
+            steps { 
+
+               sh ''' kubectl --kubeconfig $KUBECONFIG -n develop set image deployment/$IMAGE $IMAGE=$REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA ''' 
+
+            } 
+
+        } 
+
+    } 
+
+} 
