@@ -1,21 +1,13 @@
 pipeline {
     agent any
     environment {
-        REGISTRY = '192.168.42.3:5000'
+        REGISTRY = '192.168.1.104:5000'
         IMAGE = "${env.JOB_NAME}"
     }
-    tools {
-        gradle 'gradel'
-    }
     stages {
-        stage('Version Gradle'){
-            steps {
-            sh 'gradle --version'
-            }
-        }
         stage('Checkout'){
             steps {
-                git branch: 'develop',credentialsId: '26e885c2-5e8a-44c9-8eff-95fb21ad957b' ,url: 'http://192.168.42.2:8929/255-Backend/data-reader.git'
+                git branch: 'main', url: ''
             }
         }
         stage('Get Short SHA') {
@@ -59,20 +51,12 @@ pipeline {
         stage('Build') {
             steps {
               sh ''' echo $CI_COMMIT_SHORT_SHA '''
-              sh ''' DOCKER_BUILDKIT=1  && docker build -t $REGISTRY/$IMAGE:v1 . '''
-              sh ''' DOCKER_BUILDKIT=1 && docker build -t $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA . '''
+              sh ''' docker build -t $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA . '''
             }
         }
         stage('Push To Docker Registries') {
             steps {
-              sh ''' docker push $REGISTRY/$IMAGE:v1 '''
               sh ''' docker push $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA '''
-            }
-        }
-        stage('Deploy') {
-            steps {
-               sh ''' kubectl -n develop --context devuser-context get po '''
-               sh ''' kubectl -n develop --context devuser-context set image deployment/$IMAGE $IMAGE=$REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA '''
             }
         }
     }
