@@ -42,8 +42,7 @@ pipeline {
         
         stage('Sonarqube'){ 
             steps{ 
-                withSonarQubeEnv('Sonar-Server-8.9.2'){ 
-                    sh ''' gradle sonar ''' 
+                sh ''' docker run -v /var/run/docker.sock:/var/run/docker.sock  aquasec/trivy image nginx:alpine ''' 
                 }
             }
         }
