@@ -7,7 +7,7 @@ pipeline {
     stages {
         stage('Checkout'){
             steps {
-                git branch: 'main', url: ''
+                git branch: 'master', url: 'http://192.168.1.104:3000/hasan/python-web-app.git'
             }
         }
         stage('Get Short SHA') {
