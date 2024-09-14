@@ -25,7 +25,7 @@ pipeline {
                 stage('Check Git Secret') {
                     steps {
                        echo 'Tools git Secret for test config git repository'
-                       sh 'ls '
+                       sh 'ls'
                        sh 'docker run --platform linux/amd64 --rm -i -v "$PWD:/repo" trufflesecurity/trufflehog git --json --since-commit HEAD --only-verified --fail file:///repo > trufflehog.json'
                        sh 'cat trufflehog.json'
                     }
@@ -33,7 +33,7 @@ pipeline {
                 stage('Check Git Leaks') {
                     steps {
                         echo 'Check git leakage information data and config from git Tools'
-                        sh 'docker run -v "$PWD:/repo" zricethezav/gitleaks detect --source="/repo" --report-format="json" --report-path="/repo/gitleak.json" -v'
+                        sh 'docker run --rm -v "$PWD:/repo" zricethezav/gitleaks detect --source="/repo" --report-format="json" --report-path="/repo/gitleak.json" -v'
                         sh 'cat gitleak.json'
                     }
                 }  
