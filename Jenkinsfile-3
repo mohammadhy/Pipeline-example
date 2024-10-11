@@ -1,0 +1,257 @@
+pipeline {
+    agent any
+    environment {
+        REGISTRY = '192.168.1.104:5000'
+        IMAGE = "${env.JOB_NAME}"
+        Sonar_Token = credentials('Sonar')
+        psswd = credentials('psswd')
+    }
+    stages {
+        stage('Checkout'){
+            steps {
+                sh ''' git config --global http.sslVerify false  ''' 
+                git branch: 'main',credentialsId: 'gitea' ,url: 'https://192.168.1.104:3000/hasan/python.git'
+            }
+        }
+        stage('Get Short SHA') {
+            steps {
+                script {
+                    env.CI_COMMIT_SHORT_SHA = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        stage('Check Security') {
+            parallel {
+                stage('Check Git Secret') {
+                    steps {
+                       echo 'Tools git Secret for test config git repository'
+                       sh 'docker run --platform linux/amd64 --rm -i -v "$PWD:/repo" 192.168.1.104:5000/trufflehog git --json --since-commit HEAD --fail file:///repo > trufflehog.json'
+                       sh 'cat trufflehog.json'
+                    }
+                }
+                stage('Check Git Leaks') {
+                    steps {
+                        echo 'Check git leakage information data and config from git Tools'
+                        sh 'docker run --rm -v "$PWD:/repo" 192.168.1.104:5000/gitleaks detect --source="/repo" --report-format="json" --report-path="/repo/gitleak.json" -v'
+                        sh 'cat gitleak.json'
+                    }
+                }  
+            }
+        }
+        stage('Upload Scan') {
+            steps {
+                script {
+                    sh '''#!/bin/bash
+                        API_KEY="6d678313ce92695cc3bab7c4ddfb5944ef70a5c6"
+                        DOJO_URL="http://192.168.1.104:8080"
+                        PRODUCT_ID="2"
+                        ENGAGEMENT_ID="2"
+                        SCAN_TYPE="Gitleaks Scan"
+                        FILE_PATH="gitleak.json"
+                        PRODUCT_NAME="Python"
+                        
+                        check_existing_test_by_type() {
+                            echo "Checking for existing tests of type: $scan_type for engagement $ENGAGEMENT_ID..."
+                            RESPONSE=$(curl -X GET --header "Authorization: Token 6d678313ce92695cc3bab7c4ddfb5944ef70a5c6" http://192.168.1.104:8080/api/v2/tests/?engagement=2 | jq -r \'[.results[].scan_type] | join(",")\')
+                            IFS=',' read -ra SCAN_TYPES <<< "$RESPONSE"
+                            for scan_type in "${SCAN_TYPES[@]}"; do
+                                if [ "$SCAN_TYPE" == "$scan_type" ]; then
+                                    return 1
+                                fi
+                            done
+                            return 0
+                        }
+                        
+                        check_existing_test_by_type
+                        
+                        if [ $? -eq 1 ];then
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" -F "engagement_name=$PRODUCT_NAME" "$DOJO_URL/api/v2/reimport-scan/"
+                        else
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" "$DOJO_URL/api/v2/import-scan/"
+                        fi
+                    '''
+                }
+            }
+        }
+        stage('Upload Scan Trufflehog Scan') {
+            steps {
+                script {
+                    sh '''#!/bin/bash
+                        API_KEY="6d678313ce92695cc3bab7c4ddfb5944ef70a5c6"
+                        DOJO_URL="http://192.168.1.104:8080"
+                        PRODUCT_ID="2"
+                        ENGAGEMENT_ID="2"
+                        SCAN_TYPE="Trufflehog Scan"
+                        FILE_PATH="trufflehog.json"
+                        PRODUCT_NAME="Python"
+                        
+                        check_existing_test_by_type() {
+                            echo "Checking for existing tests of type: $scan_type for engagement $ENGAGEMENT_ID..."
+                            RESPONSE=$(curl -X GET --header "Authorization: Token 6d678313ce92695cc3bab7c4ddfb5944ef70a5c6" http://192.168.1.104:8080/api/v2/tests/?engagement=2 | jq -r \'[.results[].scan_type] | join(",")\')
+                            IFS=',' read -ra SCAN_TYPES <<< "$RESPONSE"
+                            for scan_type in "${SCAN_TYPES[@]}"; do
+                                if [ "$SCAN_TYPE" == "$scan_type" ]; then
+                                    return 1
+                                fi
+                            done
+                            return 0
+                        }
+                        
+                        check_existing_test_by_type
+                        
+                        if [ $? -eq 1 ];then
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" -F "engagement_name=$PRODUCT_NAME" "$DOJO_URL/api/v2/reimport-scan/"
+                        else
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" "$DOJO_URL/api/v2/import-scan/"
+                        fi
+                    '''
+                }
+            }
+        }
+        stage('Sonar-Scanner') {
+            steps {
+              sh ''' docker run --rm -e SONAR_HOST_URL="http://192.168.1.104:9000" -e SONAR_SCANNER_OPTS="-Dsonar.projectKey=${IMAGE} -Dsonar.login=${Sonar_Token}" -v $PWD:/usr/src 192.168.1.104:5000/sonar-scanner-cli '''
+            }
+        }
+        
+        stage('OWASP Dependency-Check Vulnerabilities-SCA') {
+            steps{
+                dependencyCheck additionalArguments: '''
+                           --enableExperimental
+                           --noupdate
+                           -o './'
+                           -s './'
+                           -f 'ALL'
+                          --prettyPrint''', odcInstallation: 'OWASP-Dependency-Check'
+               
+                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+            }
+        }
+
+        stage('Upload Scan Dependency Check Scan') {
+            steps {
+                script {
+                    sh '''#!/bin/bash
+                        API_KEY="6d678313ce92695cc3bab7c4ddfb5944ef70a5c6"
+                        DOJO_URL="http://192.168.1.104:8080"
+                        PRODUCT_ID="2"
+                        ENGAGEMENT_ID="2"
+                        SCAN_TYPE="Dependency Check Scan"
+                        FILE_PATH="dependency-check-report.xml"
+                        PRODUCT_NAME="Python"
+                        
+                        check_existing_test_by_type() {
+                            echo "Checking for existing tests of type: $scan_type for engagement $ENGAGEMENT_ID..."
+                            RESPONSE=$(curl -X GET --header "Authorization: Token 6d678313ce92695cc3bab7c4ddfb5944ef70a5c6" http://192.168.1.104:8080/api/v2/tests/?engagement=2 | jq -r \'[.results[].scan_type] | join(",")\')
+                            IFS=',' read -ra SCAN_TYPES <<< "$RESPONSE"
+                            for scan_type in "${SCAN_TYPES[@]}"; do
+                                if [ "$SCAN_TYPE" == "$scan_type" ]; then
+                                    return 1
+                                fi
+                            done
+                            return 0
+                        }
+                        
+                        check_existing_test_by_type
+                        
+                        if [ $? -eq 1 ];then
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" -F "engagement_name=$PRODUCT_NAME" "$DOJO_URL/api/v2/reimport-scan/"
+                        else
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" "$DOJO_URL/api/v2/import-scan/"
+                        fi
+                    '''
+                }
+            }
+        }
+        stage('Build') {
+            steps {
+              sh ''' echo $CI_COMMIT_SHORT_SHA '''
+              sh ''' docker build -t $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA . '''
+            }
+        }
+
+        stage('Image Scanning') {
+            parallel {
+/*
+                stage('Trivy'){
+                    steps{
+                        sh '''docker run --rm -v pwd:/app -v /var/run/docker.sock:/var/run/docker.sock 192.168.1.104:5000/trivy:0.18.3 image  -f json -o /app/trivy.json  $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA'''
+                    }
+                }
+*/
+                stage('Grype'){
+                    steps{
+                        sh ''' docker run --rm  -v /var/run/docker.sock:/var/run/docker.sock --name Grype 192.168.1.104:5000/grype -o json $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA > grype.json '''
+                    }
+                }
+            }
+        }
+        
+        stage('Upload Scan Grype Scan') {
+            steps {
+                script {
+                    sh '''#!/bin/bash
+                        API_KEY="6d678313ce92695cc3bab7c4ddfb5944ef70a5c6"
+                        DOJO_URL="http://192.168.1.104:8080"
+                        PRODUCT_ID="2"
+                        ENGAGEMENT_ID="2"
+                        SCAN_TYPE="Anchore Grype"
+                        FILE_PATH="grype.json"
+                        PRODUCT_NAME="Python"
+                        
+                        check_existing_test_by_type() {
+                            echo "Checking for existing tests of type: $scan_type for engagement $ENGAGEMENT_ID..."
+                            RESPONSE=$(curl -X GET --header "Authorization: Token 6d678313ce92695cc3bab7c4ddfb5944ef70a5c6" http://192.168.1.104:8080/api/v2/tests/?engagement=2 | jq -r \'[.results[].scan_type] | join(",")\')
+                            IFS=',' read -ra SCAN_TYPES <<< "$RESPONSE"
+                            for scan_type in "${SCAN_TYPES[@]}"; do
+                                if [ "$SCAN_TYPE" == "$scan_type" ]; then
+                                    return 1
+                                fi
+                            done
+                            return 0
+                        }
+                        
+                        check_existing_test_by_type
+                        
+                        if [ $? -eq 1 ];then
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" -F "engagement_name=$PRODUCT_NAME" "$DOJO_URL/api/v2/reimport-scan/"
+                        else
+                            curl -X POST --header "Content-Type: multipart/form-data" --header "Authorization: Token $API_KEY" -F "product_id=$PRODUCT_ID" -F "engagement=$ENGAGEMENT_ID" -F "active=true" -F "product_name=$PRODUCT_NAME" -F "scan_type=$SCAN_TYPE" -F "file=@$FILE_PATH" "$DOJO_URL/api/v2/import-scan/"
+                        fi
+                    '''
+                }
+            }
+        }
+/*
+        stage('DefectDojo Trivy Report'){
+            steps{
+                defectDojoPublisher artifact: 'trivy.json',
+                defectDojoCredentialsId: 'defectdojo',
+                defectDojoUrl: 'http://192.168.1.104:8080',
+                scanType: 'Trivy Scan',
+                productId: '1',
+                engagementId: '1'
+            }
+        }
+
+        stage('DefectDojo Grype  Report'){
+            steps{
+                sh ''' curl -X POST --header 'Content-Type: multipart/form-data' --header 'Authorization: Token 6d678313ce92695cc3bab7c4ddfb5944ef70a5c6' -F "product_id=2" -F "engagement=2" -F "active=true" -F "product_name=Python" -F "scan_type=Anchore Grype" -F "file=@./grype.json" -F "engagement_name=Python" "http://192.168.1.104:8080/api/v2/reimport-scan/" '''
+            }
+        }
+*/
+        stage('Login Registries') {
+            steps {
+              sh ''' docker login -u admin -p $psswd 192.168.1.104:5000  '''
+            }
+        }
+        stage('Push To Docker Registries') {
+            steps {
+              sh ''' docker push $REGISTRY/$IMAGE:$CI_COMMIT_SHORT_SHA '''
+            }
+        }
+    }
+}
