@@ -69,9 +69,8 @@ pipeline {
         
         stage('Sonarqube'){ 
             steps{ 
-                withSonarQubeEnv('Sonar-Server-8.9.2'){ 
-                    sh ''' gradle build '''
-                    sh ''' gradle sonar ''' 
+                script{ 
+                    sh ''' docker run --rm -v $(pwd):/usr/src/mymaven  -w /usr/src/mymaven maven:3.8.3-openjdk-17 mvn sonar:sonar -Dsonar.projectKey=segam -Dsonar.host.url=http://192.168.42.3:9100 -Dsonar.login=5164446464 ''' 
                 }
             }
         }
@@ -107,7 +106,7 @@ pipeline {
         }
         stage('Trivy'){ 
             steps{
-                sh ''' trivy image --db-repository $REGISTERY/aquasecurity/trivy-db:2 --java-db-repository $REGISTERY/aquasecurity/trivy-java-db:1 -f json -o trivy.json $REGISTERY/$IMAGE:$CI_COMMIT_SHORT_SHA '''
+                sh ''' docker run --rm -v $PWD:/app -v /var/run/docker.sock:/var/run/docker.sock 192.168.42.3:5000/aquasec/trivy:0.58.0 image --db-repository $REGISTERY/aquasecurity/trivy-db:2 --java-db-repository $REGISTERY/aquasecurity/trivy-java-db:1 -f json -o /app/trivy.json  $REGISTERY/$IMAGE:$CI_COMMIT_SHORT_SHA'''
             }
         }
         stage('Upload Scan Trivy') {
