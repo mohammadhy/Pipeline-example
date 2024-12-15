@@ -1,0 +1,205 @@
+pipeline {
+    agent any
+    environment {
+      REGISTERY ='192.168.1.1:5000'
+      IMAGE = "${env.JOB_NAME}"
+      PRODUCT_ID = '1'
+      DOJO_URL = '192.168.1.1:8080'
+      ENGAGEMENT_ID = '2'
+      PRODUCT_NAME = 'milad-255'
+      DOJO_KEY = credentials('defectdojo')
+      ACUNETIX = credentials('acunetix')
+    }
+    
+    tools {
+      gradle 'gradel'
+    }
+    
+    stages {
+        stage('checkout') {
+            steps {
+              git branch: 'develop', credentialsId: gitlab-1.2-username-password, url: 'http://192.168.1.1/lab/segam.git'
+                }
+            }
+        stage('Get Short SHA'){
+          steps {
+            script {
+              env.CI_COMMIT_SHORT_SHA=sh(
+                script:'git rev-parse --short HEAD',
+                returnStdout: true).trim()
+            }
+          }
+        }
+        
+        stage('check security') {
+          parallel {
+            
+            stage('git secret'){
+              steps {
+                sh ''' docker run --platform linux/amd64 --rm -i -v "$PWD:/repo" 192.168.1.1:5000/trufflehog:latest git --json --since-commit HEAD --only-verified --fail file:///repo > trufflehog.json'''
+              }
+             
+            }
+            
+            stage('git leaks'){
+              steps {
+                sh ''' docker run -v "$PWD:/repo" 192.168.1.1:5000/gitleaks detect --source="/repo" --report-format="json" --report-path="/repo/gitleaks.json" -v '''
+              }
+            }
+             
+          }
+        
+        }
+        stage('Upload Scan Gitleaks') {
+            steps {
+                script {
+                    sh ''' docker run -v "$PWD:/repo"  192.168.1.1:5000/defect-dojo:0.0.1 -url $DOJO_URL -api $DOJO_KEY -product-id $PRODUCT_ID -engagement-id $ENGAGEMENT_ID -scan-type "Gitleaks Scan" -engagement_name $IMAGE -file-path /repo/gitleaks.json -product-name $PRODUCT_NAME '''
+                }
+            }
+        }
+        stage('Upload Scan Trufflehog') {
+            steps {
+                script {
+                    sh ''' docker run -v "$PWD:/repo"  192.168.1.1:5000/defect-dojo:0.0.1 -url $DOJO_URL -api $DOJO_KEY -product-id $PRODUCT_ID -engagement-id $ENGAGEMENT_ID -scan-type "Trufflehog Scan" -engagement_name $IMAGE -file-path /repo/trufflehog.json -product-name $PRODUCT_NAME '''
+                }
+            }
+        }
+        
+
+        
+        stage('Sonarqube'){ 
+            steps{ 
+                withSonarQubeEnv('Sonar-Server-8.9.2'){ 
+                    sh ''' gradle build '''
+                    sh ''' gradle sonar ''' 
+                }
+            }
+        }
+        
+        
+        stage('OWASP Dependency-Check Vulnerabilities-SCA') {
+            steps{
+                //scan Dependency Lib on Project (CI Security)
+                dependencyCheck additionalArguments: ''' 
+                            --enableExperimental
+                           --noupdate
+                           -o './'
+                           -s './'
+                           -f 'ALL' 
+                          --prettyPrint''', odcInstallation: 'OWASP-Dependency-Check'
+                
+                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+            }
+        }
+        stage('Upload Scan dependency-check-') {
+            steps {
+                script {
+                    sh ''' docker run -v "$PWD:/repo"  192.168.1.1:5000/defect-dojo:0.0.1 -url $DOJO_URL -api $DOJO_KEY -product-id $PRODUCT_ID -engagement-id $ENGAGEMENT_ID -scan-type "Dependency Check Scan" -engagement_name $IMAGE -file-path /repo/dependency-check-report.xml -product-name $PRODUCT_NAME '''
+                }
+            }
+        }
+        stage('Build') {
+            steps {
+              sh ''' echo $CI_COMMIT_SHORT_SHA '''
+              sh ''' DOCKER_BUILDKIT=1 docker build -t $REGISTERY/$IMAGE:v1 . '''
+              sh ''' DOCKER_BUILDKIT=1 docker build -t $REGISTERY/$IMAGE:$CI_COMMIT_SHORT_SHA . '''
+            }
+        }
+        stage('Trivy'){ 
+            steps{
+                sh ''' trivy image --db-repository $REGISTERY/aquasecurity/trivy-db:2 --java-db-repository $REGISTERY/aquasecurity/trivy-java-db:1 -f json -o trivy.json $REGISTERY/$IMAGE:$CI_COMMIT_SHORT_SHA '''
+            }
+        }
+        stage('Upload Scan Trivy') {
+            steps {
+                script {
+                    sh ''' docker run -v "$PWD:/repo"  192.168.1.1:5000/defect-dojo:0.0.1 -url $DOJO_URL -api $DOJO_KEY -product-id $PRODUCT_ID -engagement-id $ENGAGEMENT_ID -scan-type "Trivy Scan" -engagement_name $IMAGE -file-path /repo/trivy.json -product-name $PRODUCT_NAME '''
+                }
+            }
+        }
+        stage('Push To Docker Registries') {
+            steps {
+              sh ''' docker push $REGISTERY/$IMAGE:v1 '''
+              sh ''' docker push $REGISTERY/$IMAGE:$CI_COMMIT_SHORT_SHA '''
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+               sh ''' kubectl -n default --context defaultuser-context set image deployment/$IMAGE $IMAGE=$REGISTERY/$IMAGE:$CI_COMMIT_SHORT_SHA  '''
+            }
+        }
+        
+
+        stage('Extract Ip'){
+          steps {
+            script {
+              env.TARGET_URL=sh(
+                script:'kubectl get svc $IMAGE -n develop -o json | jq -r ".status[].ingress[0].ip"',returnStdout: true)
+            }
+          }
+        }
+        
+        stage('Dast Zap Analaysis') {
+          parallel {
+              
+            stage('Zap Import Context'){
+              steps {
+                sh ''' zap-cli --zap-url http://192.168.1.1 --port 8080 --api-key 6516854446446 context import "Default Context" '''
+              }
+            }
+            stage('Zap Open-url'){
+              steps {
+                sh ''' zap-cli --zap-url http://192.168.1.1 --port 8080 --api-key 6516854446446 open-url http://$TARGET_URL '''
+              }
+            }
+            
+            
+            stage('Zap Spider Scan Without Username'){
+              steps {
+                sh ''' zap-cli --zap-url http://192.168.1.1 --port 8080 --api-key 6516854446446 spider -c "Default Context" http://$TARGET_URL '''
+              }
+            }
+            
+            
+            
+            stage('Zap Active Scan Without Username'){
+              steps {
+                sh ''' zap-cli --zap-url http://192.168.1.1 --port 8080 --api-key 6516854446446 active-scan --recursive -c "Default Context" http://$TARGET_URL '''
+              }
+            }
+            
+            stage('Zap Publish Report'){
+              steps {
+                sh ''' zap-cli --zap-url http://192.168.1.1 --port 8080 --api-key 6516854446446  report -f xml -o api-gateway.xml '''
+              }
+            }
+          }
+        }
+        
+        
+        stage('Acunetix-Scan') {
+            steps {
+              script {
+                  sh '''
+                        docker run  192.168.1.1:5000/pyacunetix:0.0.1 scan-target -s https://192.168.1.1:3443 -k $ACUNETIX  -a http://$TARGET_URL
+                     '''
+               }
+            }
+        }
+        
+        
+        stage('Pynessus-Scan') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'nessus', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]) {
+                      sh '''
+                      docker run 192.168.1.1:5000/pynessus:0.0.2 scan-managment -n $IMAGE -s https://192.168.1.1:8834 -u $USERNAME -p $PASSWORD -f test -P test-am -t http://$TARGET_URL
+                         '''
+                    }
+               }
+            }
+        }
+                 
+    }
+}
