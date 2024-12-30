@@ -1,42 +1,57 @@
-terraform {
-  required_providers {
-    docker = {
-      source = "calxus/docker"
-      version = "3.0.0"
-    }
-  }
-}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: segam-dashboard
+  namespace: segam
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: segam
+  template:
+    metadata:
+      labels:
+        app: segam
+    spec:
+      containers:
+        - name: segam-dashboard
+          image: 192.168.42.3:5000/segam:0.0.4
+          ports:
+          - containerPort: 8080
+          env:
+          - name: spring.datasource.url
+            valueFrom:
+              configMapKeyRef:
+                name: configmap-segam
+                key: sql_tokens
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+            requests:
+              memory: "256Mi"
+              cpu: "256m"
 
-provider "docker" {
-  host     = "ssh://user@192.168.4.199:22"
-  ssh_opts = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
-}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: segam-dashboard
+  namespace: segam
+spec:
+  type: LoadBalancer
+  selector:
+    app: segam
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
 
 
-resource "docker_volume" "private_volume" {
-  name = "dbdata"
-}
-
-resource "docker_container" "db" {
-  image = "mysql:8.0"
-  name = "database"
-  restart= "on-failure"
-  must_run="true"
-  memory=2048
-  cpu_set="1"
-  env = [
-    "MYSQL_DATABASE=monitoring",
-    "MYSQL_USER=segam_one",
-    "MYSQL_ROOT_PASSWORD=Segam_Rpw",
-    "MYSQL_PASSWORD=Segam_pw"
-  ]
-
-  ports {
-    external = 3306
-    internal = 3306
-  }
-  volumes {
-    volume_name    = docker_volume.private_volume.name
-    container_path = "/var/lib/mysql"
-  }
-}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configmap-segam
+  namespace: segam
+data:
+  sql_tokens: "jdbc:mysql://192.168.42.21:3306/monitoring"
